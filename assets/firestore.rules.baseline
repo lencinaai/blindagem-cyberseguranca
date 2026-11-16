@@ -1,0 +1,62 @@
+rules_version = '2';
+
+// Baseline de regras do Firestore com negacao por padrao.
+// Adapte os nomes das colecoes e dos campos a realidade do projeto.
+// Teste no emulador antes de publicar (ver references/07).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---- Funcoes auxiliares ----
+    function autenticado() {
+      return request.auth != null;
+    }
+    function dono(uid) {
+      return autenticado() && request.auth.uid == uid;
+    }
+    // Impede o cliente de alterar campos privilegiados (status pago, papel, etc.).
+    // Esses campos so podem ser escritos pelo Admin SDK no servidor.
+    function naoMexeEmCamposPrivilegiados() {
+      return !request.resource.data.diff(resource.data).affectedKeys()
+               .hasAny(['pro','plano','cupom','role','creditos','status']);
+    }
+
+    // ---- Documento do usuario (privado) ----
+    match /usuarios/{uid} {
+      allow read:   if dono(uid);
+      allow create: if dono(uid);
+      allow update: if dono(uid) && naoMexeEmCamposPrivilegiados();
+      allow delete: if dono(uid);
+    }
+
+    // ---- Pagina publicada (leitura publica, escrita do dono) ----
+    match /paginas/{pageId} {
+      allow read:   if true;
+      allow create: if autenticado()
+                    && request.resource.data.ownerUid == request.auth.uid;
+      allow update, delete: if autenticado()
+                    && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // ---- Leads de uma pagina (so o dono da pagina le; criacao controlada) ----
+    match /leads/{leadId} {
+      // Criacao via funcao de servidor de preferencia; se permitir no cliente,
+      // valide formato e tamanho aqui.
+      allow create: if request.resource.data.size() < 20
+                    && request.resource.data.email is string
+                    && request.resource.data.email.size() < 200;
+      allow read, update, delete: if autenticado()
+                    && resource.data.ownerUid == request.auth.uid;
+    }
+
+    // ---- Eventos de webhook (apenas servidor; cliente nunca toca) ----
+    match /eventos_webhook/{eventoId} {
+      allow read, write: if false;
+    }
+
+    // ---- Negacao por padrao: qualquer colecao nao listada fica fechada ----
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
